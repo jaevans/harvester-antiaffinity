@@ -77,8 +77,14 @@ func TestEmptyEnvClearsStringDefault(t *testing.T) {
 	}
 }
 
+func TestEmptyDryRunIsAnError(t *testing.T) {
+	if _, err := Parse([]string{"--source=labels"}, env(map[string]string{"DRY_RUN": ""})); err == nil {
+		t.Fatalf("blank DRY_RUN must not silently disable dry run")
+	}
+}
+
 func TestBadEnvValues(t *testing.T) {
-	for k, v := range map[string]string{"DRY_RUN": "maybe", "MAX_MIGRATIONS": "x", "INTERVAL": "soon"} {
+	for k, v := range map[string]string{"DRY_RUN": "maybe", "MAX_MIGRATIONS": "x", "INTERVAL": "soon", "RANCHER_INSECURE_SKIP_VERIFY": ""} {
 		if _, err := Parse([]string{"--source=labels"}, env(map[string]string{k: v})); err == nil {
 			t.Errorf("%s=%s should fail", k, v)
 		}
@@ -90,6 +96,9 @@ func TestValidation(t *testing.T) {
 		{"--source=nope"},
 		{"--source=labels", "--migration-timeout=0s"},
 		{"--source=labels", "--max-migrations=-1"},
+		{"--source=labels", "--rancher-cluster-path=k8s/clusters/local"},
+		{"--source=labels", "--rancher-ca-file=/ca", "--rancher-insecure-skip-verify"},
+		{"--source=labels", "--settle-time=-1s"},
 	} {
 		if _, err := Parse(args, env(nil)); err == nil {
 			t.Errorf("%v should fail validation", args)

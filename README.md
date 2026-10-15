@@ -19,13 +19,16 @@ Each run:
    the Harvester VM name. Its labels give the downstream cluster
    (`rke.cattle.io/cluster-name`), the pool (`rke.cattle.io/rke-machine-pool-name`)
    and the roles. `spec.vmNamespace` gives the VM namespace. `spec.providerID`
-   (`harvester://<uid>`) must match the Harvester VirtualMachine UID, so a
-   same-named VM on a different Harvester cluster is never touched.
+   (`harvester://<uid>`) must match the Harvester VirtualMachine UID. A machine
+   without a providerID yet is skipped, so a same-named VM on a different
+   Harvester cluster is never touched.
 2. **Read Harvester state.** It reads nodes, pods, VMs, VMIs and migrations.
    A node is a migration target only if it is Ready, not cordoned, not in
    Harvester maintenance mode, and passes the VM's required node affinity,
    node selector and taint tolerations. Free memory is node allocatable minus
-   pod requests. A VM is movable only if its VMI is Running, Ready and
+   pod requests. Scheduling constraints come from the running virt-launcher
+   pod, which carries the selectors KubeVirt adds (such as
+   `kubevirt.io/schedulable` and host CPU model labels). A VM is movable only if its VMI is Running, Ready and
    `LiveMigratable`, and no migration is already in progress.
 3. **Plan.** Pools are balanced in priority order: etcd pools, then control
    plane, then everything else. The planner moves a VM from a fullest node to an
@@ -35,13 +38,21 @@ Each run:
    `spec.addedNodeSelector: {kubernetes.io/hostname: <target>}`, which is what
    Harvester's own "Migrate to node" action does. The tool waits for it to
    finish and checks that the VM landed on the target. If the timeout passes,
-   it deletes the migration, which aborts it. Then it re-reads state and
-   re-plans before the next move.
+   it deletes the migration, which aborts it. After a success it waits
+   `--settle-time` (default 2m) so that etcd and other guest services recover.
+   Then it re-reads state and re-plans before the next move.
+
+VMs on a node that is not eligible (not Ready, cordoned, in maintenance) are
+neither moved nor counted. Balance is computed over the nodes that can
+actually take VMs.
 
 ### Safety rails
 
 - It does nothing while a Harvester upgrade is in progress.
-- It does nothing while a migration from a previous run is still running.
+- It does nothing while **any** migration in the cluster is unfinished. That
+  includes migrations started by Harvester maintenance mode, KubeVirt
+  workload updates or users, and aborted migrations still being torn down.
+- It does nothing while a node is entering maintenance mode.
 - At most one migration runs at a time.
 - `--max-migrations` (default 10) caps migrations per run, and
   `--max-failures` (default 3) stops a run after that many failures.
@@ -82,7 +93,9 @@ the first run's logs, then set it to `false`.
    kubectl -n harvester-antiaffinity logs -f job/manual-1
    ```
 
-The image is published to `ghcr.io/jaevans/harvester-antiaffinity`. If the
+The image is published to `ghcr.io/jaevans/harvester-antiaffinity`. Git tag
+`vX.Y.Z` produces image tag `X.Y.Z`, and `main` produces `latest` and
+`sha-<commit>`. The CronJob pins a version tag. If the
 package is private, add an `imagePullSecret` or make the package public.
 
 To run it as a long-lived Deployment instead, set `INTERVAL` (for example
@@ -108,6 +121,7 @@ name and replace `-` with `_`. A command-line flag wins over the environment.
 | `--max-failures` | `3` | Stop a run after this many failures, 0 = unlimited |
 | `--migration-timeout` | `30m` | Abort a single migration after this long (the CronJob sets 15m) |
 | `--poll-interval` | `5s` | Migration status poll interval |
+| `--settle-time` | `2m` | Pause after each successful migration |
 | `--interval` | `0` | Run continuously with this period; 0 = run once |
 | `--kubeconfig` | in-cluster | Harvester kubeconfig, for running outside the cluster |
 | `--log-level` / `--log-format` | `info` / `json` | |

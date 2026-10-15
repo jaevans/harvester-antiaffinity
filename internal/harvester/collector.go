@@ -4,7 +4,7 @@ package harvester
 
 import (
 	"context"
-		"fmt"
+	"fmt"
 	"sort"
 
 	corev1 "k8s.io/api/core/v1"
@@ -13,8 +13,8 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
-	"k8s.io/component-helpers/scheduling/corev1/nodeaffinity"
 	v1helper "k8s.io/component-helpers/scheduling/corev1"
+	"k8s.io/component-helpers/scheduling/corev1/nodeaffinity"
 	"k8s.io/klog/v2"
 	kubevirtv1 "kubevirt.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -122,13 +122,22 @@ func (c *Collector) Collect(ctx context.Context, members []inventory.Member) (*S
 	for i := range vmiList.Items {
 		vmis[key(vmiList.Items[i].Namespace, vmiList.Items[i].Name)] = &vmiList.Items[i]
 	}
+	// Any unfinished migration, whoever created it, pauses the whole pass:
+	// a maintenance evacuation, a KubeVirt workload update or a user's
+	// migration may be moving a sibling of a VM we would pick, and the planner
+	// would see that sibling at its source node.
 	migrating := map[string]bool{}
 	for _, m := range vmimList.Items {
 		if !migrationFinished(&m) {
 			migrating[key(m.Namespace, m.Spec.VMIName)] = true
-			if m.Labels[LabelManagedBy] == ManagedByValue && st.Busy == "" {
-				st.Busy = fmt.Sprintf("migration %s/%s created by a previous run is still in progress", m.Namespace, m.Name)
+			if st.Busy == "" {
+				st.Busy = fmt.Sprintf("migration %s/%s of VMI %s is still in progress", m.Namespace, m.Name, m.Spec.VMIName)
 			}
+		}
+	}
+	for _, n := range nodeList.Items {
+		if v := n.Annotations[AnnotationMaintainStatus]; v == "running" && st.Busy == "" {
+			st.Busy = fmt.Sprintf("node %s is entering maintenance mode", n.Name)
 		}
 	}
 
@@ -139,7 +148,11 @@ func (c *Collector) Collect(ctx context.Context, members []inventory.Member) (*S
 			st.Skipped = append(st.Skipped, Skip{m.Namespace, m.Name, "no such VirtualMachine on this cluster"})
 			continue
 		}
-		if m.UID != "" && string(vm.UID) != m.UID {
+		if m.UID == "" {
+			st.Skipped = append(st.Skipped, Skip{m.Namespace, m.Name, "no providerID to confirm the VM identity"})
+			continue
+		}
+		if string(vm.UID) != m.UID {
 			st.Skipped = append(st.Skipped, Skip{m.Namespace, m.Name, fmt.Sprintf("VirtualMachine UID %s does not match rancher providerID %s", vm.UID, m.UID)})
 			continue
 		}
@@ -160,7 +173,7 @@ func (c *Collector) Collect(ctx context.Context, members []inventory.Member) (*S
 			Node:          vmi.Status.NodeName,
 			Movable:       reason == "",
 			MemoryRequest: launcherMemory(vmi, podsByUID),
-			AllowedNodes:  allowedNodes(vmi, eligible),
+			AllowedNodes:  allowedNodes(vmi, podsByUID, eligible),
 		})
 	}
 	sort.Slice(st.VMs, func(i, j int) bool { return st.VMs[i].Key() < st.VMs[j].Key() })
@@ -197,9 +210,10 @@ func conditionTrue(vmi *kubevirtv1.VirtualMachineInstance, t kubevirtv1.VirtualM
 	return false
 }
 
+// migrationFinished deliberately does not treat a migration being deleted as
+// finished: an abort can be slow or fail and the migration still complete.
 func migrationFinished(m *kubevirtv1.VirtualMachineInstanceMigration) bool {
-	return m.DeletionTimestamp != nil ||
-		m.Status.Phase == kubevirtv1.MigrationSucceeded ||
+	return m.Status.Phase == kubevirtv1.MigrationSucceeded ||
 		m.Status.Phase == kubevirtv1.MigrationFailed
 }
 
@@ -219,15 +233,20 @@ func nodeEligible(n *corev1.Node) bool {
 	return false
 }
 
-// allowedNodes filters eligible nodes by the VMI's required node affinity,
-// node selector and tolerations, mirroring what the scheduler will enforce on
-// the migration target pod.
-func allowedNodes(vmi *kubevirtv1.VirtualMachineInstance, eligible []*corev1.Node) []string {
+// allowedNodes filters eligible nodes by required node affinity, node
+// selector and tolerations. The running launcher pod is used as the template
+// because KubeVirt adds constraints there that are not in the VMI spec
+// (kubevirt.io/schedulable, host CPU model labels); the target pod gets the
+// same ones. The VMI spec is the fallback when the pod cannot be found.
+func allowedNodes(vmi *kubevirtv1.VirtualMachineInstance, pods map[string]*corev1.Pod, eligible []*corev1.Node) []string {
 	pod := &corev1.Pod{Spec: corev1.PodSpec{
 		NodeSelector: vmi.Spec.NodeSelector,
 		Affinity:     vmi.Spec.Affinity,
 		Tolerations:  vmi.Spec.Tolerations,
 	}}
+	if p := launcherPod(vmi, pods); p != nil {
+		pod = p
+	}
 	required := nodeaffinity.GetRequiredNodeAffinity(pod)
 	var out []string
 	for _, n := range eligible {
@@ -280,10 +299,8 @@ func podMemoryRequest(p *corev1.Pod) int64 {
 // launcherMemory is the memory the migration target pod will request. The
 // running virt-launcher pod is the best estimate; the VMI spec is a fallback.
 func launcherMemory(vmi *kubevirtv1.VirtualMachineInstance, pods map[string]*corev1.Pod) int64 {
-	for uid, node := range vmi.Status.ActivePods {
-		if p, ok := pods[string(uid)]; ok && node == vmi.Status.NodeName {
-			return podMemoryRequest(p)
-		}
+	if p := launcherPod(vmi, pods); p != nil {
+		return podMemoryRequest(p)
 	}
 	if r, ok := vmi.Spec.Domain.Resources.Requests[corev1.ResourceMemory]; ok {
 		return r.Value()
@@ -292,6 +309,15 @@ func launcherMemory(vmi *kubevirtv1.VirtualMachineInstance, pods map[string]*cor
 		return vmi.Spec.Domain.Memory.Guest.Value()
 	}
 	return 0
+}
+
+func launcherPod(vmi *kubevirtv1.VirtualMachineInstance, pods map[string]*corev1.Pod) *corev1.Pod {
+	for uid, node := range vmi.Status.ActivePods {
+		if p, ok := pods[string(uid)]; ok && node == vmi.Status.NodeName {
+			return p
+		}
+	}
+	return nil
 }
 
 func (c *Collector) upgradeInProgress(ctx context.Context) (string, error) {

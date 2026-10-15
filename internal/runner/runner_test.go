@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"testing"
+	"time"
 
 	"github.com/jaevans/harvester-antiaffinity/internal/harvester"
 	"github.com/jaevans/harvester-antiaffinity/internal/inventory"
@@ -169,5 +170,22 @@ func TestRunOnceContextCancelled(t *testing.T) {
 	}
 	if len(w.migrations) != 0 {
 		t.Fatalf("no migration should start after cancel")
+	}
+}
+
+func TestRunOnceSettlesBetweenMigrations(t *testing.T) {
+	w := newWorld(map[string]string{"1": "a", "2": "a", "3": "a"})
+	r := newRunner(w, members("1", "2", "3"))
+	r.SettleTime = 50 * time.Millisecond
+	start := time.Now()
+	res, err := r.RunOnce(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Succeeded) != 2 {
+		t.Fatalf("expected 2 migrations, got %+v", res)
+	}
+	if elapsed := time.Since(start); elapsed < 100*time.Millisecond {
+		t.Fatalf("expected two settle periods, run took %v", elapsed)
 	}
 }

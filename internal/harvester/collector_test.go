@@ -130,7 +130,7 @@ func TestNodeEligibility(t *testing.T) {
 	cordoned := readyNode("cordoned", 64)
 	cordoned.Spec.Unschedulable = true
 	maint := readyNode("maint", 64)
-	maint.Annotations = map[string]string{AnnotationMaintainStatus: "running"}
+	maint.Annotations = map[string]string{AnnotationMaintainStatus: "completed"}
 	notReady := readyNode("notready", 64)
 	notReady.Status.Conditions[0].Status = corev1.ConditionFalse
 	tainted := readyNode("tainted", 64)
@@ -141,13 +141,14 @@ func TestNodeEligibility(t *testing.T) {
 	labelled.Labels["network.harvesterhci.io/data"] = "true"
 
 	vm, vmi, pod := runningVM("ns", "vm", "uid", "labelled")
-	vmi.Spec.Affinity = &corev1.Affinity{NodeAffinity: &corev1.NodeAffinity{
+	pod.Spec.Affinity = &corev1.Affinity{NodeAffinity: &corev1.NodeAffinity{
 		RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{NodeSelectorTerms: []corev1.NodeSelectorTerm{{
 			MatchExpressions: []corev1.NodeSelectorRequirement{{Key: "network.harvesterhci.io/data", Operator: corev1.NodeSelectorOpIn, Values: []string{"true"}}},
 		}}},
 	}}
 	vm2, vmi2, pod2 := runningVM("ns", "vm2", "uid2", "labelled")
-	vmi2.Spec.Tolerations = []corev1.Toleration{{Key: "dedicated", Operator: corev1.TolerationOpExists}}
+	pod2.Spec.Tolerations = []corev1.Toleration{{Key: "dedicated", Operator: corev1.TolerationOpExists}}
+	_ = vmi2
 
 	c := &Collector{Client: newClient(cordoned, maint, notReady, tainted, prefer, labelled, vm, vmi, pod, vm2, vmi2, pod2)}
 	st, err := c.Collect(context.Background(), []inventory.Member{member("ns", "vm", "uid"), member("ns", "vm2", "uid2")})
@@ -320,5 +321,78 @@ func TestLauncherMemoryFallbacks(t *testing.T) {
 	vmi.Spec.Domain.Resources.Requests = corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("3Gi")}
 	if got := launcherMemory(vmi, nil); got != 3<<30 {
 		t.Fatalf("request fallback: got %d", got)
+	}
+}
+
+func TestAllowedNodesFallsBackToVMISpec(t *testing.T) {
+	a, b := readyNode("a", 64), readyNode("b", 64)
+	b.Labels["zone"] = "x"
+	_, vmi, _ := runningVM("ns", "vm", "uid", "a")
+	vmi.Spec.NodeSelector = map[string]string{"zone": "x"}
+	if got := allowedNodes(vmi, nil, []*corev1.Node{a, b}); !reflect.DeepEqual(got, []string{"b"}) {
+		t.Fatalf("got %v", got)
+	}
+}
+
+func TestAllowedNodesUsesLauncherPodSelectors(t *testing.T) {
+	// KubeVirt puts kubevirt.io/schedulable on the launcher pod, not the VMI.
+	a, b := readyNode("a", 64), readyNode("b", 64)
+	a.Labels["kubevirt.io/schedulable"] = "true"
+	_, vmi, pod := runningVM("ns", "vm", "uid", "a")
+	pod.Spec.NodeSelector = map[string]string{"kubevirt.io/schedulable": "true"}
+	pods := map[string]*corev1.Pod{string(pod.UID): pod}
+	if got := allowedNodes(vmi, pods, []*corev1.Node{a, b}); !reflect.DeepEqual(got, []string{"a"}) {
+		t.Fatalf("got %v", got)
+	}
+}
+
+func TestCollectBusyOnAnyUnfinishedMigration(t *testing.T) {
+	vm1, vmi1, pod1 := runningVM("ns", "vm1", "uid1", "a")
+	now := metav1.Now()
+	cases := map[string]*kubevirtv1.VirtualMachineInstanceMigration{
+		"external running": {
+			ObjectMeta: metav1.ObjectMeta{Namespace: "ns", Name: "evac"},
+			Spec:       kubevirtv1.VirtualMachineInstanceMigrationSpec{VMIName: "other"},
+			Status:     kubevirtv1.VirtualMachineInstanceMigrationStatus{Phase: kubevirtv1.MigrationScheduling},
+		},
+		"ours being deleted": {
+			ObjectMeta: metav1.ObjectMeta{Namespace: "ns", Name: "aborting", DeletionTimestamp: &now, Finalizers: []string{"kubevirt.io/migrationJobFinalize"},
+				Labels: map[string]string{LabelManagedBy: ManagedByValue}},
+			Spec:   kubevirtv1.VirtualMachineInstanceMigrationSpec{VMIName: "vm1"},
+			Status: kubevirtv1.VirtualMachineInstanceMigrationStatus{Phase: kubevirtv1.MigrationRunning},
+		},
+	}
+	for name, m := range cases {
+		c := &Collector{Client: newClient(readyNode("a", 64), vm1, vmi1, pod1, m)}
+		st, err := c.Collect(context.Background(), []inventory.Member{member("ns", "vm1", "uid1")})
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if st.Busy == "" {
+			t.Errorf("%s: expected busy", name)
+		}
+	}
+}
+
+func TestCollectBusyWhileNodeEntersMaintenance(t *testing.T) {
+	n := readyNode("a", 64)
+	n.Annotations = map[string]string{AnnotationMaintainStatus: "running"}
+	st, err := (&Collector{Client: newClient(n)}).Collect(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Busy == "" {
+		t.Fatalf("expected busy while a node drains")
+	}
+}
+
+func TestCollectSkipsMemberWithoutUID(t *testing.T) {
+	vm1, vmi1, pod1 := runningVM("ns", "vm1", "uid1", "a")
+	st, err := (&Collector{Client: newClient(readyNode("a", 64), vm1, vmi1, pod1)}).Collect(context.Background(), []inventory.Member{member("ns", "vm1", "")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(st.VMs) != 0 || len(st.Skipped) != 1 {
+		t.Fatalf("member without providerID must be skipped: %+v", st)
 	}
 }

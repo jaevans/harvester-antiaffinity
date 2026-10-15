@@ -106,6 +106,7 @@ func build(cfg *config.Config, log *slog.Logger) (*runner.Runner, error) {
 		MaxMigrations: cfg.MaxMigrations,
 		MaxFailures:   cfg.MaxFailures,
 		DryRun:        cfg.DryRun,
+		SettleTime:    cfg.SettleTime,
 	}, nil
 }
 

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"time"
 
 	"github.com/jaevans/harvester-antiaffinity/internal/harvester"
 	"github.com/jaevans/harvester-antiaffinity/internal/inventory"
@@ -34,6 +35,10 @@ type Runner struct {
 	// MaxFailures stops the pass after this many failed migrations.
 	MaxFailures int
 	DryRun      bool
+	// SettleTime is waited after each successful migration before the next
+	// one, so guest services (etcd in particular) recover from the
+	// switchover pause before another member of the pool is touched.
+	SettleTime time.Duration
 }
 
 // Result summarises a pass.
@@ -125,6 +130,13 @@ func (r *Runner) RunOnce(ctx context.Context) (Result, error) {
 		}
 		log.Info("live migration succeeded")
 		res.Succeeded = append(res.Succeeded, move)
+		if r.SettleTime > 0 {
+			select {
+			case <-ctx.Done():
+				return res, ctx.Err()
+			case <-time.After(r.SettleTime):
+			}
+		}
 	}
 }
 

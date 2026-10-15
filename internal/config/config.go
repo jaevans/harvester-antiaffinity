@@ -41,6 +41,7 @@ type Config struct {
 	MaxFailures      int
 	MigrationTimeout time.Duration
 	PollInterval     time.Duration
+	SettleTime       time.Duration
 	// Interval > 0 runs forever, one pass per interval. 0 runs a single pass.
 	Interval time.Duration
 
@@ -63,7 +64,9 @@ func Parse(args []string, lookupEnv func(string) (string, bool)) (*Config, error
 	}
 	var errs []error
 	boolean := func(p *bool, name string, def bool, usage string) {
-		if v, ok := lookupEnv(envName(name)); ok && v != "" {
+		// An empty boolean is an error rather than "unset": a blanked
+		// DRY_RUN must not silently mean "migrate".
+		if v, ok := lookupEnv(envName(name)); ok {
 			b, err := strconv.ParseBool(v)
 			if err != nil {
 				errs = append(errs, fmt.Errorf("%s: %w", envName(name), err))
@@ -110,6 +113,7 @@ func Parse(args []string, lookupEnv func(string) (string, bool)) (*Config, error
 	integer(&c.MaxFailures, "max-failures", 3, "abort a pass after this many failed migrations, 0 for unlimited")
 	duration(&c.MigrationTimeout, "migration-timeout", 30*time.Minute, "abort a single migration after this long")
 	duration(&c.PollInterval, "poll-interval", 5*time.Second, "how often to poll migration status")
+	duration(&c.SettleTime, "settle-time", 2*time.Minute, "wait after each successful migration before starting the next")
 	duration(&c.Interval, "interval", 0, "run continuously with this interval between passes; 0 runs once and exits")
 	str(&c.LogLevel, "log-level", "info", "debug, info, warn or error")
 	str(&c.LogFormat, "log-format", "json", "json or text")
@@ -138,11 +142,17 @@ func (c *Config) validate() error {
 	default:
 		return fmt.Errorf("unknown --source %q", c.Source)
 	}
+	if c.RancherClusterPath != "" && !strings.HasPrefix(c.RancherClusterPath, "/") {
+		return errors.New("--rancher-cluster-path must be empty or start with /")
+	}
+	if c.RancherCAFile != "" && c.RancherInsecureSkipVerify {
+		return errors.New("--rancher-ca-file and --rancher-insecure-skip-verify are mutually exclusive")
+	}
 	if c.MigrationTimeout <= 0 {
 		return errors.New("--migration-timeout must be positive")
 	}
-	if c.MaxMigrations < 0 || c.MaxFailures < 0 || c.Interval < 0 {
-		return errors.New("--max-migrations, --max-failures and --interval must not be negative")
+	if c.MaxMigrations < 0 || c.MaxFailures < 0 || c.Interval < 0 || c.SettleTime < 0 {
+		return errors.New("--max-migrations, --max-failures, --settle-time and --interval must not be negative")
 	}
 	return nil
 }

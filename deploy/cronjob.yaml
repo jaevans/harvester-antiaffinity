@@ -26,7 +26,7 @@ spec:
               type: RuntimeDefault
           containers:
             - name: harvester-antiaffinity
-              image: ghcr.io/jaevans/harvester-antiaffinity:latest
+              image: ghcr.io/jaevans/harvester-antiaffinity:0.1.0
               imagePullPolicy: IfNotPresent
               env:
                 - name: SOURCE
