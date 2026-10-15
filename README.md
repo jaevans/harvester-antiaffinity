@@ -151,6 +151,11 @@ make lint   # golangci-lint
 make e2e    # kind + KubeVirt end-to-end test, needs Docker and kind
 ```
 
+The e2e test needs amd64 or real KVM. On arm64, KubeVirt only accepts
+`host-passthrough` CPUs, which software emulation cannot provide. Apple
+Silicon before M3 has no nested virtualization, so the test cannot run on
+those Macs; the script stops early and says so. CI runs it on amd64.
+
 virt-handler crashes in kind with "too many open files" unless the Docker
 host's inotify limits are raised:
 `sysctl -w fs.inotify.max_user_instances=8192 fs.inotify.max_user_watches=524288`.

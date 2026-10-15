@@ -47,6 +47,14 @@ else
   kind export kubeconfig --name "$CLUSTER" --kubeconfig "$KUBECONFIG"
 fi
 
+# On arm64 KubeVirt only admits host-passthrough CPUs, which software
+# emulation cannot provide, so guests need real KVM (Apple Silicon has no
+# nested virtualization before M3). amd64 works with emulation.
+if [[ $(docker exec "$CLUSTER-control-plane" uname -m) == aarch64 ]] &&
+  ! docker exec "$CLUSTER-control-plane" test -e /dev/kvm; then
+  fail "arm64 kind nodes without /dev/kvm cannot run KubeVirt guests; run the e2e on amd64 (CI does)"
+fi
+
 log "build and load image"
 docker build -t "$IMAGE" "$ROOT"
 kind load docker-image "$IMAGE" --name "$CLUSTER"
