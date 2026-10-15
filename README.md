@@ -151,6 +151,12 @@ make lint   # golangci-lint
 make e2e    # kind + KubeVirt end-to-end test, needs Docker and kind
 ```
 
+virt-handler crashes in kind with "too many open files" unless the Docker
+host's inotify limits are raised:
+`sysctl -w fs.inotify.max_user_instances=8192 fs.inotify.max_user_watches=524288`.
+On macOS, run that in the Docker VM, for example
+`docker run --rm --privileged --pid=host alpine sysctl -w ...`.
+
 The e2e test (`hack/e2e.sh`) works like this:
 
 1. It creates a four-node kind cluster and installs KubeVirt in emulation mode.
