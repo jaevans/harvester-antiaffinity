@@ -49,20 +49,21 @@ type Config struct {
 }
 
 // Parse reads flags from args, falling back to environment variables via
-// getenv for every flag (e.g. --max-migrations <- MAX_MIGRATIONS).
-func Parse(args []string, getenv func(string) string) (*Config, error) {
+// lookupEnv for every flag (e.g. --max-migrations <- MAX_MIGRATIONS). A set but
+// empty variable counts as set, so RANCHER_CLUSTER_PATH="" clears the default.
+func Parse(args []string, lookupEnv func(string) (string, bool)) (*Config, error) {
 	c := &Config{}
 	fs := flag.NewFlagSet("harvester-antiaffinity", flag.ContinueOnError)
 
 	str := func(p *string, name, def, usage string) {
-		if v := getenv(envName(name)); v != "" {
+		if v, ok := lookupEnv(envName(name)); ok {
 			def = v
 		}
 		fs.StringVar(p, name, def, usage+" (env "+envName(name)+")")
 	}
 	var errs []error
 	boolean := func(p *bool, name string, def bool, usage string) {
-		if v := getenv(envName(name)); v != "" {
+		if v, ok := lookupEnv(envName(name)); ok && v != "" {
 			b, err := strconv.ParseBool(v)
 			if err != nil {
 				errs = append(errs, fmt.Errorf("%s: %w", envName(name), err))
@@ -72,7 +73,7 @@ func Parse(args []string, getenv func(string) string) (*Config, error) {
 		fs.BoolVar(p, name, def, usage+" (env "+envName(name)+")")
 	}
 	integer := func(p *int, name string, def int, usage string) {
-		if v := getenv(envName(name)); v != "" {
+		if v, ok := lookupEnv(envName(name)); ok && v != "" {
 			i, err := strconv.Atoi(v)
 			if err != nil {
 				errs = append(errs, fmt.Errorf("%s: %w", envName(name), err))
@@ -82,7 +83,7 @@ func Parse(args []string, getenv func(string) string) (*Config, error) {
 		fs.IntVar(p, name, def, usage+" (env "+envName(name)+")")
 	}
 	duration := func(p *time.Duration, name string, def time.Duration, usage string) {
-		if v := getenv(envName(name)); v != "" {
+		if v, ok := lookupEnv(envName(name)); ok && v != "" {
 			d, err := time.ParseDuration(v)
 			if err != nil {
 				errs = append(errs, fmt.Errorf("%s: %w", envName(name), err))

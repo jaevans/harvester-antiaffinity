@@ -1,0 +1,36 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: harvester-antiaffinity
+  namespace: harvester-antiaffinity
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: harvester-antiaffinity
+rules:
+  - apiGroups: [""]
+    resources: [nodes, pods]
+    verbs: [get, list]
+  - apiGroups: [kubevirt.io]
+    resources: [virtualmachines, virtualmachineinstances]
+    verbs: [get, list]
+  - apiGroups: [kubevirt.io]
+    resources: [virtualmachineinstancemigrations]
+    verbs: [get, list, create, delete]
+  - apiGroups: [harvesterhci.io]
+    resources: [upgrades]
+    verbs: [list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: harvester-antiaffinity
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: harvester-antiaffinity
+subjects:
+  - kind: ServiceAccount
+    name: harvester-antiaffinity
+    namespace: harvester-antiaffinity

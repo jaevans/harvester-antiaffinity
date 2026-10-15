@@ -1,0 +1,67 @@
+# Stands in for the Rancher management cluster: the tool reads
+# HarvesterMachine objects through a Kubernetes API, so the kind API server
+# itself plays Rancher's /k8s/clusters/local endpoint.
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: harvestermachines.rke-machine.cattle.io
+spec:
+  group: rke-machine.cattle.io
+  names:
+    kind: HarvesterMachine
+    listKind: HarvesterMachineList
+    plural: harvestermachines
+    singular: harvestermachine
+  scope: Namespaced
+  versions:
+    - name: v1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          x-kubernetes-preserve-unknown-fields: true
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: fleet-default
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: rancher-reader
+  namespace: fleet-default
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: rancher-reader-token
+  namespace: fleet-default
+  annotations:
+    kubernetes.io/service-account.name: rancher-reader
+type: kubernetes.io/service-account-token
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: rancher-reader
+  namespace: fleet-default
+rules:
+  - apiGroups: [rke-machine.cattle.io]
+    resources: [harvestermachines]
+    verbs: [get, list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: rancher-reader
+  namespace: fleet-default
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: rancher-reader
+subjects:
+  - kind: ServiceAccount
+    name: rancher-reader
+    namespace: fleet-default

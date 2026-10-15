@@ -1,0 +1,65 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: harvester-antiaffinity
+  namespace: harvester-antiaffinity
+spec:
+  schedule: "17 */3 * * *"
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 600
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 10200
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: harvester-antiaffinity
+        spec:
+          serviceAccountName: harvester-antiaffinity
+          restartPolicy: Never
+          securityContext:
+            runAsNonRoot: true
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: harvester-antiaffinity
+              image: ghcr.io/jaevans/harvester-antiaffinity:latest
+              imagePullPolicy: IfNotPresent
+              env:
+                - name: SOURCE
+                  value: rancher
+                - name: RANCHER_URL
+                  valueFrom:
+                    secretKeyRef:
+                      name: rancher-credentials
+                      key: url
+                - name: RANCHER_TOKEN_FILE
+                  value: /var/run/secrets/rancher/token
+                - name: DRY_RUN
+                  value: "true"
+                - name: MAX_MIGRATIONS
+                  value: "10"
+                - name: MIGRATION_TIMEOUT
+                  value: 15m
+              volumeMounts:
+                - name: rancher
+                  mountPath: /var/run/secrets/rancher
+                  readOnly: true
+              resources:
+                requests:
+                  cpu: 10m
+                  memory: 64Mi
+                limits:
+                  memory: 256Mi
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: [ALL]
+          volumes:
+            - name: rancher
+              secret:
+                secretName: rancher-credentials

@@ -9,8 +9,11 @@ import (
 	"time"
 )
 
-func env(m map[string]string) func(string) string {
-	return func(k string) string { return m[k] }
+func env(m map[string]string) func(string) (string, bool) {
+	return func(k string) (string, bool) {
+		v, ok := m[k]
+		return v, ok
+	}
 }
 
 func TestDefaultsWithLabelsSource(t *testing.T) {
@@ -58,6 +61,19 @@ func TestEnvFallbackAndFlagPrecedence(t *testing.T) {
 	}
 	if !reflect.DeepEqual(c.ExcludeClusters, []string{"a", "b"}) {
 		t.Fatalf("exclude = %v", c.ExcludeClusters)
+	}
+}
+
+func TestEmptyEnvClearsStringDefault(t *testing.T) {
+	c, err := Parse([]string{"--source=labels"}, env(map[string]string{"RANCHER_CLUSTER_PATH": "", "MAX_MIGRATIONS": ""}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.RancherClusterPath != "" {
+		t.Fatalf("empty env should clear the path, got %q", c.RancherClusterPath)
+	}
+	if c.MaxMigrations != 10 {
+		t.Fatalf("empty numeric env should keep the default, got %d", c.MaxMigrations)
 	}
 }
 

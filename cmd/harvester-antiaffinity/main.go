@@ -33,7 +33,7 @@ func main() {
 }
 
 func run() error {
-	cfg, err := config.Parse(os.Args[1:], os.Getenv)
+	cfg, err := config.Parse(os.Args[1:], os.LookupEnv)
 	if err != nil {
 		return err
 	}
